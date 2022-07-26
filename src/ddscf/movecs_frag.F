@@ -39,7 +39,18 @@ c
       integer frag
       logical movecs_read_header, movecs_read
       external  movecs_read_header, movecs_read
-c
+      logical do_et_calc, et_frag_homo !#haspaker
+c     -----------------------------
+c     get ET calc flag #haspaker
+      
+      do_et_calc = .false.
+      if (.not.rtdb_get(rtdb, 'dft:calc_et', mt_log, 1, do_et_calc))
+     &    do_et_calc=.false.
+
+      et_frag_homo = .false.
+      if(.not.rtdb_get(rtdb,'dft:et_frag_homo',mt_log,1,et_frag_homo))
+     &    et_frag_homo=.false.
+c    ------------------------     
       call ga_sync()
       oprint = util_print('mo guess', print_default) 
      $     .and. (ga_nodeid().eq.0)
@@ -96,8 +107,14 @@ c
      $        dbl_mb(k_eval), g_frag)) call errquit
      $        ('movecs fragment: failed read fragment MOs',0,
      &       INPUT_ERR)
+
+
 c
-**         call ga_print(g_frag)
+cc         write(6,*) '**************GVEC*****************'
+cc         call util_flush(6)
+cc         call ga_print(g_vecs)
+cc         write(6,*) '**************---*****************'
+cc         call util_flush(6)
 c
          nclosed_frag = 0
          nopen_frag   = 0
@@ -111,6 +128,25 @@ c
                nvirt_frag = nvirt_frag + 1
             endif
          enddo
+
+c     -----------------------------
+c     Save number of basis functions for molecule #haspaker 
+      if (do_et_calc.and.et_frag_homo) then
+      if (frag.eq.1) then
+        if (.not. rtdb_put(rtdb, 'dft:mol1_bfn', mt_int, 1, nbf_frag))
+     &    call errquit('conv_inp: rtdb_put failed', 100, RTDB_ERR)
+        if (.not.rtdb_put(rtdb,'dft:mol1_homo_idx', 
+     +                    mt_int, 1, nclosed_frag))
+     &    call errquit('etfrag: rtdb_put failed', 100, RTDB_ERR)
+      elseif (frag.eq.2) then
+        if (.not. rtdb_put(rtdb, 'dft:mol2_bfn', mt_int, 1, nbf_frag))
+     &    call errquit('conv_inp: rtdb_put failed', 100, RTDB_ERR)
+        if (.not.rtdb_put(rtdb,'dft:mol2_homo_idx', 
+     +                    mt_int, 1, nclosed_frag))
+     &    call errquit('etfrag: rtdb_put failed', 100, RTDB_ERR)
+      endif
+      endif  
+
          if (oprint) then
             write(6,3) title_frag(1:inp_strlen(title_frag)),
      $           basis_name_frag(1:inp_strlen(basis_name_frag)),
@@ -190,7 +226,11 @@ c     $           ('movecs_fragment: virt shell mismatch', nvirt)
 c
          bf_off = bf_off + nbf_frag
 c
-**         call ga_print(g_vecs)
+cc         write(6,*) '**************GVEC*****************'
+cc         call util_flush(6)
+cc         call ga_print(g_vecs)
+cc         write(6,*) '**************---*****************'
+cc         call util_flush(6)
 c
          if (.not. ma_pop_stack(l_occ)) 
      $        call errquit('movecs_fragment: stack is bad',0, MA_ERR)

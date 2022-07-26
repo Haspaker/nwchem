@@ -66,6 +66,20 @@ c
      $            multipliers0(max_constr)
       double precision grad_constr(max_constr)
       double precision gold_constr(max_constr),p_constr(max_constr)
+
+c     array handles #haspaker
+      integer orb1and2
+      integer orb1, orb2
+      integer vectmp1, vectmp2
+      integer tmp1_BFby2, tmp2_BFby2
+      integer tmp1_2by2, tmp2_2by2
+      double precision HRR, HPP, HRP, SRP
+      logical do_et_calc
+      integer mol1_homo_idx, mol2_homo_idx
+      integer mol1_bfn, mol2_bfn
+      integer g_overlap, input_movecs
+      integer et_spin
+c     ------------      
 c
       integer ixyz, lxyz
       logical oprint
@@ -325,6 +339,18 @@ c
       me = ga_nodeid()
       nproc = ga_nnodes()
 
+c     -----------------------------
+c     get ET calc flag #haspaker
+      
+      do_et_calc = .false.
+      if (.not.rtdb_get(rtdb, 'dft:calc_et', mt_log, 1, do_et_calc))
+     &    do_et_calc=.false.
+
+      et_spin = 1
+      if (.not.rtdb_get(rtdb, 'dft:calc_et', mt_log, 1, et_spin))
+     &    et_spin = 1
+            
+
 c     ---------------------------------------------------------
 c     check which relativistic Hamiltonian (if any) we're using
 c     and write some information to the output.
@@ -577,12 +603,13 @@ c
       if(disp.or.xc_chkdispauto())
      &      call xc_vdw(rtdb,geom,Edisp,dum,'energy')
 c     
+c
 c     == scf energy convergence criterion ==
       if (.not. ga_duplicate(g_fock, g_tmp, 'tmp matrix'))
      &  call errquit('dft_scf:failed duplicate',g_fock, GA_ERR)
       if (.not. ga_duplicate(g_fock, g_focks(1), ' alpha fock'))
      &  call errquit('dft_scf:failed duplicate',g_fock, GA_ERR)
-c
+
 c MN solvation models -->
 c
 c     for VEM calculations if istep_cosmo_vem=2
@@ -886,6 +913,15 @@ c     == better have static ldb at high node counts ==
      &                       'dft', title, oskel, oadapt, 
      &                       .true.) 
       if(staticguess) llldb_out=util_statldb(llldb,rtdb)
+      
+c     Copy & keep input vectors for further calculation #haspaker
+      if (do_et_calc) then     
+        if (.not.ga_duplicate(g_gmovecs(et_spin),
+     +             input_movecs,'inp_movecs'))
+     &   call errquit('dft_scf: error creating ga',0,GA_ERR)
+         call ga_copy(g_gmovecs(et_spin), input_movecs)
+      endif
+
       call dft_guessout(nmo,nbf_ao,g_gmovecs,g_movecs,ipol)
       if (me.eq.0.and.oprint)
      &     write(LuOut,'(2x," Time after variat. SCF: ",f8.1)')
@@ -1270,6 +1306,7 @@ c     remove flipping to avoid multiple operation in geom opt.
          if(.not.rtdb_delete(rtdb, 'nwdft:spinflip'))
      &        call errquit('dft_scf: cannot rtdb_delete',3, MA_ERR)
       endif
+
       call dft_fockbld(rtdb,natoms,ntotel,
      ,     g_fock,g_focks,g_dens,g_vxc,g_movecs,g_xcinv, 
      ,     g_tmp,g_nq,g_wght,g_xyz,
@@ -1286,6 +1323,7 @@ cc AJL/Begin/FDE
 c     &     g_rel,g_frozemb)
      &     g_rel,g_frozemb,g_vxc_fde,g_xcinv_fde,g_dens_fde,eelec)
 cc AJL/End
+
       if(util_print('dft timings', print_high))
      &      time2=util_wallsec()  ! end fock matrix build time
 c
@@ -1296,6 +1334,209 @@ c     print fock matrix build time
      &                     time2-time1
         endif
       end if
+
+
+
+c     Get orbital hamiltonians and overlap #haspaker
+
+      if (do_et_calc) then
+
+          write(6,*)
+          call util_print_centered(6,
+     &         'Get ET matrix data',40,.true.)
+          call util_flush(6)
+
+            call ga_sync() 
+            if (.not.ga_create(mt_dbl, nbf_ao, 2, 
+     & 'orb1and2', nbf_ao, 0, orb1and2))
+     &  call errquit(
+     +              'dft_scf: gacreate failed ',0, GA_ERR)
+
+            call ga_sync() 
+            if (.not.ga_create(mt_dbl, nbf_ao, 1, 
+     & 'orb1', nbf_ao, 0, orb1))
+     &  call errquit(
+     +              'dft_scf: gacreate failed ',0, GA_ERR)
+
+            call ga_sync() 
+            if (.not.ga_create(mt_dbl, nbf_ao, 1, 
+     & 'orb2', nbf_ao, 0, orb2))
+     &  call errquit(
+     +              'dft_scf: gacreate failed ',0, GA_ERR)
+
+            call ga_sync() 
+            if (.not.ga_create(mt_dbl, nbf_ao, 2, 
+     & 'tmp1_BFby2', nbf_ao, 0, tmp1_BFby2))
+     &  call errquit(
+     +              'dft_scf: gacreate failed ',0, GA_ERR)
+
+            call ga_sync() 
+            if (.not.ga_create(mt_dbl, nbf_ao, 2, 
+     & 'tmp2_BFby2', nbf_ao, 0, tmp2_BFby2))
+     &  call errquit(
+     +              'dft_scf: gacreate failed ',0, GA_ERR)
+
+
+            call ga_sync() 
+            if (.not.ga_create(mt_dbl, 2, 2, 
+     & 'tmp1_2by2', 0, 0, tmp1_2by2))
+     &  call errquit(
+     +              'dft_scf: gacreate failed ',0, GA_ERR)
+
+            
+            call ga_sync() 
+            if (.not.ga_create(mt_dbl, 2, 2, 
+     & 'tmp2_2by2', 0, 0, tmp2_2by2))
+     &  call errquit(
+     +              'dft_scf: gacreate failed ',0, GA_ERR)
+
+
+            if (.not.rtdb_get(rtdb, 'dft:mol1_homo_idx', 
+     &            mt_int, 1, mol1_homo_idx))
+     &      call errquit('et: cannot get mol1_homo_idx',0,rtdb_err)
+
+            if (.not.rtdb_get(rtdb, 'dft:mol2_homo_idx', 
+     &            mt_int, 1, mol2_homo_idx))
+     &      call errquit('et: cannot get mol2_homo_idx',0,rtdb_err)
+
+            if (.not.rtdb_get(rtdb, 'dft:mol1_bfn', 
+     &            mt_int, 1, mol1_bfn))
+     &      call errquit('et: cannot get mol1_bfn',0,rtdb_err)
+
+            if (.not.rtdb_get(rtdb, 'dft:mol2_bfn', 
+     &            mt_int, 1, mol2_bfn))
+     &      call errquit('et: cannot get mol2_bfn',0,rtdb_err)
+
+            call ga_sync() 
+            if (.not. ga_duplicate(g_fock, g_overlap, 'overlap mtx'))
+     &        call errquit('dft_scf:failed duplicate',g_fock, GA_ERR)
+
+            
+            call ga_sync() 
+            call ga_zero(g_overlap)
+            call ga_sync() 
+            call int_1e_ga(ao_bas_han,ao_bas_han,
+     &                     g_overlap,'overlap',.false.)
+
+
+            call ga_zero(orb1and2)
+            call ga_sync()
+            call ga_copy_patch('n', input_movecs, 1, mol1_bfn,
+     $            mol1_homo_idx, mol1_homo_idx, 
+     $            orb1and2, 1, mol1_bfn, 1, 1)
+
+
+            call ga_sync() 
+            call ga_copy_patch('n', input_movecs, mol1_bfn+1, nbf_ao,
+     $            mol2_homo_idx+mol1_homo_idx, 
+     $            mol2_homo_idx+mol1_homo_idx,
+     $            orb1and2, mol1_bfn+1, nbf_ao, 2, 2)
+
+
+            if (util_print("et matrices", print_never)) then
+                  write(6,*)
+                  call util_print_centered(6,
+     &               'ET initial data',40,.true.)
+                  call util_flush(6)
+                  call ga_print(input_movecs)
+                  call ga_print(g_focks(1))
+                  call ga_print(g_overlap)
+            endif
+
+            write(6,*)
+            call util_print_centered(6,
+     &               'ET vectors',40,.true.)
+            call util_flush(6)
+            call ga_print(orb1and2)
+
+
+            call ga_sync() 
+            call ga_dgemm('n', 'n', nbf_ao, 2,
+     $      nbf_ao, 1d0, g_overlap,
+     $      orb1and2, 0d0, tmp1_BFby2)
+
+            call ga_sync() 
+            call ga_dgemm('t', 'n', 2, 2,
+     $      nbf_ao, 1d0, orb1and2,
+     $      tmp1_BFby2, 0d0, tmp1_2by2)
+
+            write(6,*)
+            call util_print_centered(6,
+     &               'psi_1,2 * psi_1,2',40,.true.)
+            call util_flush(6)
+
+            call ga_print(tmp1_2by2)
+            call util_flush(6)
+
+            call ga_get(tmp1_2by2, 1, 1, 2, 2, SRP, 1)
+            
+            call ga_sync() 
+            call ga_dgemm('n', 'n', nbf_ao, 2,
+     $      nbf_ao, 1d0, g_focks(1),
+     $      orb1and2, 0d0, tmp1_BFby2)
+
+            call ga_sync() 
+            call ga_dgemm('t', 'n', 2, 2,
+     $      nbf_ao, 1d0, orb1and2,
+     $      tmp1_BFby2, 0d0, tmp1_2by2)
+
+            write(6,*)
+            call util_print_centered(6,
+     &               'psi_1,2 * F * psi_1,2',40,.true.)
+            call util_flush(6)
+
+            call ga_print(tmp1_2by2)
+            call util_flush(6)
+
+            call ga_get(tmp1_2by2, 1, 1, 1, 1, HRR, 1)
+            call ga_get(tmp1_2by2, 2, 2, 2, 2, HPP, 1)
+            call ga_get(tmp1_2by2, 1, 1, 2, 2, HRP, 1)
+
+            write(6,*)
+            call util_print_centered(6,
+     &               'Final ET calculation',40,.true.)
+            call util_flush(6)
+
+            write(*,'(A,I3)') "Spin is ", et_spin
+            write(*,'(A,I3)') "1st mol basis size ", mol1_bfn
+            write(*,'(A,I3)') "2nd mol basis size ", mol2_bfn
+            write(*,'(A,I3)') "1st mol HOMO (R) has idx ", mol1_homo_idx
+            write(*,'(A,I3)') "2nd mol HOMO (P) has idx ", mol2_homo_idx
+            write(*,'(A,1d20.10)') "HRR is ", HRR
+            write(*,'(A,1d20.10)') "HPP is ", HPP
+            write(*,'(A,1d20.10)') "HRP is ", HRP
+            write(*,'(A,1d20.10)') "SRP is ", SRP
+            write(*,'(A,1d20.10)') "J is ", 
+     &            (HRP - 0.5d0*SRP*(HRR+HPP))/(1.0d0 - SRP*SRP)
+            call util_flush(6)
+
+c            call ga_dgemm('n', 'n', nbf_ao, 1,
+c     $      nbf_ao, 1d0, g_overlap,
+c     $      orb1, zero, vectmp1)
+c
+c            call ga_print(vectmp1)
+c
+c            call ga_dgemm('t', 'n', 1, 1,
+c     $      nbf_ao, 1d0, orb2,
+c     $      vectmp1, zero, tmp2_2by2)
+c
+c            call ga_print(tmp2_2by2)
+c            call ga_get(tmp2_2by2, 1, 1, 1, 1, SRP, 1)
+c
+c            write(*,*) "SCALAR TEST"
+c            write(6,*)
+c            call util_flush(6)
+c            write(*,4442) SRP
+c
+c 4442       format("SRP is ", 1d20.2)
+
+c            call ga_get(g_movecs, 1, nbf_ao, 1, 1, 
+c     $        dbl_mb(orb1), nbf_ao)
+
+            go to 1970
+            
+
+      endif
 c     
 c     Calculate the total electronic energy.
 c     
@@ -2301,7 +2542,10 @@ c     end infinite loop for SCF iterations
 c     
 c     Store energy and convergence status ... must store before
 c     write movecs since date of insertion is used.
-c     
+c
+
+ 1337 continue ! label to exit prematurely (from et calc) #haspaker
+
       if (.not. rtdb_put(rtdb,'uhf:coulomb', mt_dbl, 1, Ecoul)) call
      $     errquit('uhf: writing ecoul failed', 0, RTDB_ERR)
 c
