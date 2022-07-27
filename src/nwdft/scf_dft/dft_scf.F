@@ -67,14 +67,13 @@ c
       double precision grad_constr(max_constr)
       double precision gold_constr(max_constr),p_constr(max_constr)
 
-c     array handles #haspaker
+c     variables for et calculation #haspaker
       integer orb1and2
-      integer orb1, orb2
-      integer vectmp1, vectmp2
-      integer tmp1_BFby2, tmp2_BFby2
-      integer tmp1_2by2, tmp2_2by2
-      double precision HRR, HPP, HRP, SRP
-      logical do_et_calc
+      integer tmp1_BFby2 !, tmp2_BFby2
+      integer tmp1_2by2 !, tmp2_2by2
+      double precision HRR, HPP, HRP, SRP, JRP
+      double precision H_to_eV
+      logical do_et_calc, et_shared_basis
       integer mol1_homo_idx, mol2_homo_idx
       integer mol1_bfn, mol2_bfn
       integer g_overlap, input_movecs
@@ -346,8 +345,14 @@ c     get ET calc flag #haspaker
       if (.not.rtdb_get(rtdb, 'dft:calc_et', mt_log, 1, do_et_calc))
      &    do_et_calc=.false.
 
+      et_shared_basis = .false.
+      if (.not.rtdb_get(rtdb, 'dft:et_shared_basis', 
+     +        mt_log, 1, et_shared_basis))
+     &    et_shared_basis=.false.
+
+c     get desired spin for et calculationr
       et_spin = 1
-      if (.not.rtdb_get(rtdb, 'dft:calc_et', mt_log, 1, et_spin))
+      if (.not.rtdb_get(rtdb, 'dft:et_spin', mt_int, 1, et_spin))
      &    et_spin = 1
             
 
@@ -1338,6 +1343,7 @@ c     print fock matrix build time
 
 
 c     Get orbital hamiltonians and overlap #haspaker
+c     and calculate transfer integraö
 
       if (do_et_calc) then
 
@@ -1346,51 +1352,36 @@ c     Get orbital hamiltonians and overlap #haspaker
      &         'Get ET matrix data',40,.true.)
           call util_flush(6)
 
+           ! allocate matrix with orbital vectors
             call ga_sync() 
             if (.not.ga_create(mt_dbl, nbf_ao, 2, 
      & 'orb1and2', nbf_ao, 0, orb1and2))
      &  call errquit(
      +              'dft_scf: gacreate failed ',0, GA_ERR)
 
-            call ga_sync() 
-            if (.not.ga_create(mt_dbl, nbf_ao, 1, 
-     & 'orb1', nbf_ao, 0, orb1))
-     &  call errquit(
-     +              'dft_scf: gacreate failed ',0, GA_ERR)
-
-            call ga_sync() 
-            if (.not.ga_create(mt_dbl, nbf_ao, 1, 
-     & 'orb2', nbf_ao, 0, orb2))
-     &  call errquit(
-     +              'dft_scf: gacreate failed ',0, GA_ERR)
-
+           ! allocate (nbf,2) matrix used in calculation 
             call ga_sync() 
             if (.not.ga_create(mt_dbl, nbf_ao, 2, 
      & 'tmp1_BFby2', nbf_ao, 0, tmp1_BFby2))
      &  call errquit(
      +              'dft_scf: gacreate failed ',0, GA_ERR)
 
-            call ga_sync() 
-            if (.not.ga_create(mt_dbl, nbf_ao, 2, 
-     & 'tmp2_BFby2', nbf_ao, 0, tmp2_BFby2))
-     &  call errquit(
-     +              'dft_scf: gacreate failed ',0, GA_ERR)
-
-
+           ! allocate (2,2) matrix used in calculation 
             call ga_sync() 
             if (.not.ga_create(mt_dbl, 2, 2, 
      & 'tmp1_2by2', 0, 0, tmp1_2by2))
      &  call errquit(
      +              'dft_scf: gacreate failed ',0, GA_ERR)
-
-            
+            !
+            ! allocate overlap matrix
             call ga_sync() 
-            if (.not.ga_create(mt_dbl, 2, 2, 
-     & 'tmp2_2by2', 0, 0, tmp2_2by2))
-     &  call errquit(
-     +              'dft_scf: gacreate failed ',0, GA_ERR)
+            if (.not. ga_duplicate(g_fock, g_overlap, 'overlap mtx'))
+     &        call errquit('dft_scf:failed duplicate',g_fock, GA_ERR)
 
 
+            ! get input parameters
+            ! can be set by automatically from fragments
+            ! with the dft:et_use_frag_homos db flag
             if (.not.rtdb_get(rtdb, 'dft:mol1_homo_idx', 
      &            mt_int, 1, mol1_homo_idx))
      &      call errquit('et: cannot get mol1_homo_idx',0,rtdb_err)
@@ -1399,6 +1390,7 @@ c     Get orbital hamiltonians and overlap #haspaker
      &            mt_int, 1, mol2_homo_idx))
      &      call errquit('et: cannot get mol2_homo_idx',0,rtdb_err)
 
+      if (.not.et_shared_basis) then
             if (.not.rtdb_get(rtdb, 'dft:mol1_bfn', 
      &            mt_int, 1, mol1_bfn))
      &      call errquit('et: cannot get mol1_bfn',0,rtdb_err)
@@ -1406,12 +1398,9 @@ c     Get orbital hamiltonians and overlap #haspaker
             if (.not.rtdb_get(rtdb, 'dft:mol2_bfn', 
      &            mt_int, 1, mol2_bfn))
      &      call errquit('et: cannot get mol2_bfn',0,rtdb_err)
+      endif
 
-            call ga_sync() 
-            if (.not. ga_duplicate(g_fock, g_overlap, 'overlap mtx'))
-     &        call errquit('dft_scf:failed duplicate',g_fock, GA_ERR)
-
-            
+            ! calculate overlap matrix
             call ga_sync() 
             call ga_zero(g_overlap)
             call ga_sync() 
@@ -1419,7 +1408,13 @@ c     Get orbital hamiltonians and overlap #haspaker
      &                     g_overlap,'overlap',.false.)
 
 
+
+            ! copy both homo vectors into a (nbf,2) matrix
+
+
             call ga_zero(orb1and2)
+
+      if (.not.et_shared_basis) then
             call ga_sync()
             call ga_copy_patch('n', input_movecs, 1, mol1_bfn,
      $            mol1_homo_idx, mol1_homo_idx, 
@@ -1431,8 +1426,21 @@ c     Get orbital hamiltonians and overlap #haspaker
      $            mol2_homo_idx+mol1_homo_idx, 
      $            mol2_homo_idx+mol1_homo_idx,
      $            orb1and2, mol1_bfn+1, nbf_ao, 2, 2)
+      else
+            call ga_sync()
+            call ga_copy_patch('n', input_movecs, 1, nbf_ao,
+     $            mol1_homo_idx, mol1_homo_idx, 
+     $            orb1and2, 1, nbf_ao, 1, 1)
+
+            call ga_sync() 
+            call ga_copy_patch('n', input_movecs, 1, nbf_ao,
+     $            mol2_homo_idx,
+     $            mol2_homo_idx,
+     $            orb1and2, 1, nbf_ao, 2, 2)
+      endif
 
 
+            ! print some info
             if (util_print("et matrices", print_never)) then
                   write(6,*)
                   call util_print_centered(6,
@@ -1443,6 +1451,7 @@ c     Get orbital hamiltonians and overlap #haspaker
                   call ga_print(g_overlap)
             endif
 
+            ! print used vectors
             write(6,*)
             call util_print_centered(6,
      &               'ET vectors',40,.true.)
@@ -1450,6 +1459,9 @@ c     Get orbital hamiltonians and overlap #haspaker
             call ga_print(orb1and2)
 
 
+            ! calculate psi'*psi
+            ! matrix multiplication
+            ! (two multiplications = two passes)
             call ga_sync() 
             call ga_dgemm('n', 'n', nbf_ao, 2,
      $      nbf_ao, 1d0, g_overlap,
@@ -1468,8 +1480,13 @@ c     Get orbital hamiltonians and overlap #haspaker
             call ga_print(tmp1_2by2)
             call util_flush(6)
 
+            ! Orbital overlap is the off-diagonal 
             call ga_get(tmp1_2by2, 1, 1, 2, 2, SRP, 1)
             
+
+            ! calculate psi'*psi
+            ! matrix multiplication
+            ! (two multiplications = two passes)
             call ga_sync() 
             call ga_dgemm('n', 'n', nbf_ao, 2,
      $      nbf_ao, 1d0, g_focks(1),
@@ -1497,42 +1514,35 @@ c     Get orbital hamiltonians and overlap #haspaker
      &               'Final ET calculation',40,.true.)
             call util_flush(6)
 
+            H_to_eV = 27.211386246 ! Hartree to eV conversion factor
+
             write(*,'(A,I3)') "Spin is ", et_spin
+
+            if (.not.et_shared_basis) then
             write(*,'(A,I3)') "1st mol basis size ", mol1_bfn
             write(*,'(A,I3)') "2nd mol basis size ", mol2_bfn
+            else
+            write(*,'(A,I3)') "Shared basis size ", nbf_ao
+            endif
             write(*,'(A,I3)') "1st mol HOMO (R) has idx ", mol1_homo_idx
             write(*,'(A,I3)') "2nd mol HOMO (P) has idx ", mol2_homo_idx
-            write(*,'(A,1d20.10)') "HRR is ", HRR
-            write(*,'(A,1d20.10)') "HPP is ", HPP
-            write(*,'(A,1d20.10)') "HRP is ", HRP
+            write(*,'(A,1d20.10,A,1d20.10,A)') "HRR is ", HRR,
+     &      " Hartree or ", HRR*H_to_eV, " eV"
+            write(*,'(A,1d20.10,A,1d20.10,A)') "HPP is ", HPP,
+     &      " Hartree or ", HPP*H_to_eV, " eV"
+            write(*,'(A,1d20.10,A,1d20.10,A)') "HRP is ", HRP,
+     &      " Hartree or ", HRP*H_to_eV, " eV"
             write(*,'(A,1d20.10)') "SRP is ", SRP
-            write(*,'(A,1d20.10)') "J is ", 
-     &            (HRP - 0.5d0*SRP*(HRR+HPP))/(1.0d0 - SRP*SRP)
+
+            ! Site energy correction
+            JRP = (HRP - 0.5d0*SRP*(HRR+HPP))/(1.0d0 - SRP*SRP)
+            write(*,*)
+     & "formula: J = (HRP - 0.5d0*SRP*(HRR+HPP))/(1.0d0 - SRP*SRP)"
+            write(*,'(A,1d20.10,A,1d20.10,A)') "J is ", JRP,
+     &      " Hartree or ", JRP*H_to_eV, " eV"
             call util_flush(6)
 
-c            call ga_dgemm('n', 'n', nbf_ao, 1,
-c     $      nbf_ao, 1d0, g_overlap,
-c     $      orb1, zero, vectmp1)
-c
-c            call ga_print(vectmp1)
-c
-c            call ga_dgemm('t', 'n', 1, 1,
-c     $      nbf_ao, 1d0, orb2,
-c     $      vectmp1, zero, tmp2_2by2)
-c
-c            call ga_print(tmp2_2by2)
-c            call ga_get(tmp2_2by2, 1, 1, 1, 1, SRP, 1)
-c
-c            write(*,*) "SCALAR TEST"
-c            write(6,*)
-c            call util_flush(6)
-c            write(*,4442) SRP
-c
-c 4442       format("SRP is ", 1d20.2)
-
-c            call ga_get(g_movecs, 1, nbf_ao, 1, 1, 
-c     $        dbl_mb(orb1), nbf_ao)
-
+            ! exit calculation early
             go to 1970
             
 

@@ -48,7 +48,8 @@ c     get ET calc flag #haspaker
      &    do_et_calc=.false.
 
       et_frag_homo = .false.
-      if(.not.rtdb_get(rtdb,'dft:et_frag_homo',mt_log,1,et_frag_homo))
+      if(.not.rtdb_get(rtdb,'dft:et_use_frag_homos',
+     +         mt_log,1,et_frag_homo))
      &    et_frag_homo=.false.
 c    ------------------------     
       call ga_sync()
@@ -130,7 +131,8 @@ c
          enddo
 
 c     -----------------------------
-c     Save number of basis functions for molecule #haspaker 
+c     Save number of basis functions for molecule(fragment)  #haspaker 
+c     and save HOMO orbital index for molecule (fragment) molecule #haspaker 
       if (do_et_calc.and.et_frag_homo) then
       if (frag.eq.1) then
         if (.not. rtdb_put(rtdb, 'dft:mol1_bfn', mt_int, 1, nbf_frag))
